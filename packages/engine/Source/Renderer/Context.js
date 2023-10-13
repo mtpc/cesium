@@ -1273,8 +1273,16 @@ Context.prototype.clear = function (clearCommand, passState) {
   gl.clear(bitmask);
 };
 
+function makeBuffer(gl, sizeOrData) {
+  const buf = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+  gl.bufferData(gl.ARRAY_BUFFER, sizeOrData, gl.STATIC_DRAW);
+  return buf;
+}
+
 function beginDraw(
   context,
+  drawCommand,
   framebuffer,
   passState,
   shaderProgram,
@@ -1297,6 +1305,26 @@ function beginDraw(
     context._maxFrameTextureUnitIndex,
     shaderProgram.maximumTextureUnitIndex
   );
+  if (defined(drawCommand.transformFeedbackBuffers)){
+    // Create and fill out a transform feedback
+    const tf = context._gl.createTransformFeedback();
+    context._gl.bindTransformFeedback(context._gl.TRANSFORM_FEEDBACK, tf);
+
+    const tf_wgl_bufs = [];
+    for (const value of drawCommand.transformFeedbackBuffers.values()) {
+      tf_wgl_bufs.push(makeBuffer(context._gl, value.length * 4));
+    }
+
+    for (let i = 0; i < tf_wgl_bufs.length; i++) {
+      context._gl.bindBufferBase(context._gl.TRANSFORM_FEEDBACK_BUFFER, i, tf_wgl_bufs[i]);
+    }
+
+    context._gl.bindTransformFeedback(gl.TRANSFORM_FEEDBACK, null);
+    context._gl.bindBuffer(context._gl.ARRAY_BUFFER, null);  // productBuffer was still bound to ARRAY_BUFFER so unbind it
+
+    drawCommand.transformFeedbackWGLBuffers = tf_wgl_bufs
+    drawCommand.transformFeedback = tf
+  }
 }
 
 function continueDraw(context, drawCommand, shaderProgram, uniformMap) {
@@ -1337,6 +1365,16 @@ function continueDraw(context, drawCommand, shaderProgram, uniformMap) {
 
   va._bind();
   const indexBuffer = va.indexBuffer;
+
+  const tf = drawCommand.transformFeedback;
+
+  if(defined(tf)){
+    // no need to call the fragment shader
+    context._gl.enable(context._gl.RASTERIZER_DISCARD);
+
+    context._gl.bindTransformFeedback(context._gl.TRANSFORM_FEEDBACK, tf);
+    context._gl.beginTransformFeedback(primitiveType);
+  }
 
   if (defined(indexBuffer)) {
     offset = offset * indexBuffer.bytesPerIndex; // offset in vertices to offset in bytes
@@ -1379,6 +1417,33 @@ function continueDraw(context, drawCommand, shaderProgram, uniformMap) {
     }
   }
 
+  if(defined(tf)) {
+    context._gl.endTransformFeedback();
+    context._gl.bindTransformFeedback(context._gl.TRANSFORM_FEEDBACK, null);
+
+    // turn on using fragment shaders again
+    context._gl.disable(context._gl.RASTERIZER_DISCARD);
+
+    // Read all the transformbuffer results into regular arraybuffer arrays
+
+    let wglbuf;
+    let outbuf;
+    const outbuf_keys = Array.from(drawCommand.transformFeedbackBuffers.keys());
+    const wglbufs = drawCommand.transformFeedbackWGLBuffers
+    for (let i = 0; i < wglbufs.length; i++ ){
+      wglbuf = drawCommand.transformFeedbackWGLBuffers[i];
+      outbuf = drawCommand.transformFeedbackBuffers.get(outbuf_keys[i])
+      context._gl.bindBuffer(context._gl.ARRAY_BUFFER, wglbuf);
+      context._gl.getBufferSubData(
+        context._gl.ARRAY_BUFFER,
+        0,    // byte offset into GPU buffer,
+        outbuf,
+      );
+    }
+    context._gl.bindBuffer(context._gl.ARRAY_BUFFER, null);
+
+  }
+
   va._unBind();
 }
 
@@ -1406,7 +1471,7 @@ Context.prototype.draw = function (
   shaderProgram = defaultValue(shaderProgram, drawCommand._shaderProgram);
   uniformMap = defaultValue(uniformMap, drawCommand._uniformMap);
 
-  beginDraw(this, framebuffer, passState, shaderProgram, renderState);
+  beginDraw(this, drawCommand, framebuffer, passState, shaderProgram, renderState);
   continueDraw(this, drawCommand, shaderProgram, uniformMap);
 };
 

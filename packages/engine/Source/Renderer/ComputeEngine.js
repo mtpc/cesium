@@ -11,6 +11,7 @@ import DrawCommand from "./DrawCommand.js";
 import Framebuffer from "./Framebuffer.js";
 import RenderState from "./RenderState.js";
 import ShaderProgram from "./ShaderProgram.js";
+import { TransformFeedbackCommand } from './TransformFeedbackCommand.js'
 
 /**
  * @private
@@ -64,6 +65,7 @@ ComputeEngine.prototype.execute = function (computeCommand) {
   //>>includeStart('debug', pragmas.debug);
   Check.defined("computeCommand", computeCommand);
   //>>includeEnd('debug');
+  const isTf = computeCommand instanceof TransformFeedbackCommand
 
   // This may modify the command's resources, so do error checking afterwards
   if (defined(computeCommand.preExecute)) {
@@ -79,13 +81,9 @@ ComputeEngine.prototype.execute = function (computeCommand) {
       "computeCommand.fragmentShaderSource or computeCommand.shaderProgram is required."
     );
   }
-
-  Check.defined("computeCommand.outputTexture", computeCommand.outputTexture);
+  if (!isTf) Check.defined("computeCommand.outputTexture", computeCommand.outputTexture);
   //>>includeEnd('debug');
-
-  const outputTexture = computeCommand.outputTexture;
-  const width = outputTexture.width;
-  const height = outputTexture.height;
+  let output, renderState, framebuffer
 
   const context = this._context;
   const vertexArray = defined(computeCommand.vertexArray)
@@ -94,24 +92,40 @@ ComputeEngine.prototype.execute = function (computeCommand) {
   const shaderProgram = defined(computeCommand.shaderProgram)
     ? computeCommand.shaderProgram
     : createViewportQuadShader(context, computeCommand.fragmentShaderSource);
-  const framebuffer = createFramebuffer(context, outputTexture);
-  const renderState = createRenderState(width, height);
+  if (isTf) {
+    output = computeCommand.transformFeedbackBuffers
+    shaderProgram._transformFeedbackVaryings = Array.from(output.keys())
+    const height = context._canvas.height;
+    const width = context._canvas.width;
+    renderState = createRenderState(width, height);
+  } else {
+    output = computeCommand.outputTexture;
+    framebuffer = createFramebuffer(context, output);
+    const height = output.height;
+    const width = output.width;
+    renderState = createRenderState(width, height);
+    const clearCommand = clearCommandScratch;
+    clearCommand.framebuffer = framebuffer;
+    clearCommand.renderState = renderState;
+    clearCommand.execute(context);
+  }
   const uniformMap = computeCommand.uniformMap;
-
-  const clearCommand = clearCommandScratch;
-  clearCommand.framebuffer = framebuffer;
-  clearCommand.renderState = renderState;
-  clearCommand.execute(context);
-
   const drawCommand = drawCommandScratch;
   drawCommand.vertexArray = vertexArray;
   drawCommand.renderState = renderState;
   drawCommand.shaderProgram = shaderProgram;
   drawCommand.uniformMap = uniformMap;
-  drawCommand.framebuffer = framebuffer;
+  if (isTf) {
+    if(defined(computeCommand.primitiveType)){
+      drawCommand.primitiveType = computeCommand.primitiveType
+    }
+    drawCommand.transformFeedbackBuffers = output
+  } else {
+    drawCommand.framebuffer = framebuffer;
+  }
   drawCommand.execute(context);
 
-  framebuffer.destroy();
+  if (!isTf) framebuffer.destroy();
 
   if (!computeCommand.persists) {
     shaderProgram.destroy();
@@ -121,7 +135,7 @@ ComputeEngine.prototype.execute = function (computeCommand) {
   }
 
   if (defined(computeCommand.postExecute)) {
-    computeCommand.postExecute(outputTexture);
+    computeCommand.postExecute(output);
   }
 };
 

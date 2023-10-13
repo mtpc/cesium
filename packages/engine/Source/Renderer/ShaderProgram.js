@@ -197,6 +197,14 @@ function createAndLinkProgram(gl, shader) {
   gl.attachShader(program, vertexShader);
   gl.attachShader(program, fragmentShader);
 
+  if(defined(shader._transformFeedbackVaryings)){
+    gl.transformFeedbackVaryings(
+      program,
+      shader._transformFeedbackVaryings,
+      gl.INTERLEAVED_ATTRIBS
+    );
+  }
+
   const attributeLocations = shader._attributeLocations;
   if (defined(attributeLocations)) {
     for (const attribute in attributeLocations) {
